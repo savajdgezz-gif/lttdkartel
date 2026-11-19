@@ -1,35 +1,3 @@
-local SOLO=[=[
-if not game:IsLoaded() then game.Loaded:Wait() end
-if game.PlaceId~=93712201161812 then return end
-
-local P=game.Players.LocalPlayer
-local G=P:WaitForChild("PlayerGui")
-local H=(P.Character or P.CharacterAdded:Wait()):WaitForChild("HumanoidRootPart")
-local Q=G:WaitForChild("Lobby"):WaitForChild("QueueFrame")
-local L=workspace:WaitForChild("Lifts")
-
-local function count(l)
- local t=l:FindFirstChild("PlayersCount",true)
- return t and tonumber(t.Text:match("(%d+)%s*/%s*%d+"))
-end
-
-local function visible(b)
- local p=b
- while p and p~=G do
-  if p:IsA("GuiObject") and not p.Visible then return false end
-  if p:IsA("ScreenGui") and not p.Enabled then return false end
-  p=p.Parent
- end
- return true
-end
-
-local function start(l)
- if count(l)~=1 then return false end
- for _,b in ipairs(Q:GetDescendants()) do
-  if b:IsA("GuiButton") and visible(b) then
-   local s=b.Name:lower()
-   if b:IsA("TextButton") then s=s.." "..b.Text:lower() end
-   for _,v in ipairs(b:GetDescendants()) do
     if v:IsA("TextLabel") then s=s.." "..v.Text:lower() end
    end
    if s:find("start") then
@@ -86,34 +54,67 @@ warn("NO CONFIRMED SOLO START")
 if game.PlaceId==93712201161812 then
  loadstring(SOLO)()
 elseif game.PlaceId==13775256536 then
- local q=queue_on_teleport
+ local env=(type(getgenv)=="function" and getgenv()) or _G
+ if env.LegacyTurkeyRetryActive then
+  warn("LEGACY TELEPORT RETRY ALREADY RUNNING")
+  return
+ end
+ env.LegacyTurkeyRetryActive=true
+
+ local q=queue_on_teleport or queueonteleport
   or (syn and syn.queue_on_teleport)
   or (fluxus and fluxus.queue_on_teleport)
-
  if q then
   local ok=pcall(q,SOLO)
   print("AUTO CONTINUE:",ok)
-  if not ok then
-   warn("Run script again after teleport")
-  end
+  if not ok then warn("RUN AGAIN IN LEGACY IF NEEDED") end
  else
-  warn("Auto continue unavailable; run again in Legacy")
+  warn("AUTO CONTINUE UNAVAILABLE; RUN AGAIN IN LEGACY")
  end
 
- local G=game.Players.LocalPlayer:WaitForChild("PlayerGui")
- local B=G:WaitForChild("Lobby")
-  :WaitForChild("GameModes")
-  :WaitForChild("Modes")
-  :WaitForChild("Legacy")
-  :WaitForChild("Card")
+ local P=game:GetService("Players").LocalPlayer
+ local TS=game:GetService("TeleportService")
+ local B=P:WaitForChild("PlayerGui"):WaitForChild("Lobby")
+  :WaitForChild("GameModes"):WaitForChild("Modes")
+  :WaitForChild("Legacy"):WaitForChild("Card")
   :WaitForChild("PlayButton")
 
- if firesignal then
-  firesignal(B.Activated)
- else
-  B:Activate()
+ local going=false
+ local since=0
+ local attempts=0
+ P.OnTeleport:Connect(function(state)
+  if state==Enum.TeleportState.Failed then
+   going=false
+   warn("TELEPORT FAILED; RETRYING")
+  elseif state==Enum.TeleportState.Started
+   or state==Enum.TeleportState.WaitingForServer
+   or state==Enum.TeleportState.InProgress then
+   going=true
+   since=os.clock()
+   print("TELEPORT STARTED:",state.Name)
+  end
+ end)
+ TS.TeleportInitFailed:Connect(function(player,result,message)
+  if player==P then
+   going=false
+   warn("TELEPORT INIT FAILED:",tostring(result),tostring(message))
+  end
+ end)
+
+ while game.PlaceId==13775256536 and P.Parent do
+  if not going or os.clock()-since>20 then
+   going=false
+   attempts=attempts+1
+   since=os.clock()
+   local ok,err=pcall(function()
+    if firesignal then firesignal(B.Activated)
+    else B:Activate() end
+   end)
+   print("LEGACY TELEPORT ATTEMPT",attempts,"OK",ok)
+   if not ok then warn(tostring(err)) end
+  end
+  task.wait(3)
  end
- print("TELEPORT TO LEGACY")
 else
  warn("UNKNOWN PLACE:",game.PlaceId)
 end
