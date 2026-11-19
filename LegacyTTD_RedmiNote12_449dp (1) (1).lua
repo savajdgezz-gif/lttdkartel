@@ -1,11 +1,11 @@
--- LEGACY TTD | Replay v0.8.21 - Redmi Note 12 449dp CASH + DIRECT + MOBILE HOTBAR FIX
+-- LEGACY TTD | Replay v0.8.21 - Redmi Note 12 449dp MOBILE HOTBAR ORDER FIX
 -- Recorded gameplay remains at 1920x1080. Clicks are adapted to the live Roblox
 -- camera viewport using centered, height-preserving scaling, not phone DP.
 -- Redmi Note 12: 2400x1080 landscape nominal, minimum width: 449dp.
 -- Real Roblox ViewportSize may differ due to Android system bars and safe area.
 -- Built from user's v2 Zoom recording (15 confirmed placements, 66 recorded upgrades).
 -- First real placement captures this session's compressed BridgeNet2 id; never reuse across servers.
--- All later placement calls are matched against new Workspace.Troops models; upgrades remain GUI-confirmed.
+-- Upgrades: first verified GUI upgrade per unit+level learns server-local packet; later direct only if learned.
 -- IMPORTANT: Recorder marks upgrades instanceVerified=false. Model identification is
 -- inferred from individual placement coords, selection ray projection and level history.
 -- Treat every result as best-effort unless the model itself exposes its level.
@@ -39,7 +39,7 @@ end
 
 local CONFIG={
     directPlacement=true,           -- first placement through genuine game input, subsequent via fresh session token
-    directUpgrade=false,            -- N wasn't proven to be upgrade; retain tested GUI Activated with confirmation
+    directUpgrade=true,             -- auto-calibrate from one VERIFIED GUI upgrade per type+level, then direct
     directRotationInferred=true,    -- orientation inferred from saved R presses (1..4); not independently verified
     placementRadiusXZ=2.0,        -- preferred exact match at recorded position
     placementNearbyAcceptXZ=4.0, -- maximum small server offset for ONE confirmed new unit
@@ -1072,71 +1072,97 @@ end
 -- sent while the in-game placement preview was silently lost.  Reassert selection
 -- by switching to a DIFFERENT slot and back.  A same-slot key alone can toggle
 -- the preview OFF.  Never count a placement until a new model is observed.
+-- Redmi/Delta: the five real troop buttons are named InteractiveButton.
+-- Their labels do not include slot numbers; the previous text-based lookup
+-- always returned 0 candidates and silently reverted to PC keyboard keys.
+local function orderedMobileButtons()
+    local panel=pg:FindFirstChild("TroopsSelector",true)
+    if not panel then return {},"TroopsSelector missing" end
+    local buttons={}
+    for _,b in ipairs(panel:GetDescendants()) do
+        if b:IsA("GuiButton") and b.Name=="InteractiveButton"
+            and vis(b) and b.AbsoluteSize.X>1 and b.AbsoluteSize.Y>1 then
+            buttons[#buttons+1]=b
+        end
+    end
+    if #buttons~=5 then
+        return buttons,"expected 5 visible InteractiveButton slots, found "..#buttons
+    end
+    -- Resolve order by visible physical layout, not a button's generic name.
+    -- Landscape mobile selectors are normally horizontal, portrait ones vertical.
+    local minx,maxx,miny,maxy=math.huge,-math.huge,math.huge,-math.huge
+    for _,b in ipairs(buttons) do
+        local c=midpoint(b)
+        minx=math.min(minx,c.X);maxx=math.max(maxx,c.X)
+        miny=math.min(miny,c.Y);maxy=math.max(maxy,c.Y)
+    end
+    local horizontal=(maxx-minx)>=(maxy-miny)
+    table.sort(buttons,function(a,b)
+        local x,y=midpoint(a),midpoint(b)
+        if horizontal then
+            if math.abs(x.X-y.X)>2 then return x.X<y.X end
+            return x.Y<y.Y
+        end
+        if math.abs(x.Y-y.Y)>2 then return x.Y<y.Y end
+        return x.X<y.X
+    end)
+    return buttons,horizontal and "left-to-right" or "top-to-bottom"
+end
 local function mobileHotbarReport()
     if not MOBILE_449 then return end
-    local panel=pg:FindFirstChild("TroopsSelector",true)
-    if not panel then
-        log("MOBILE HOTBAR DIAG | TroopsSelector absent; VIM number keys might not select a troop")
-        return
+    local buttons,order=orderedMobileButtons()
+    log("MOBILE HOTBAR ORDER | "..tostring(order).." | buttons="..#buttons)
+    for i,b in ipairs(buttons) do
+        local c=midpoint(b)
+        log(string.format("MOBILE SLOT %d | %s | parent=%s | center=%d,%d | layout=%d | visible=%s",
+            i,b:GetFullName(),b.Parent and b.Parent.Name or "?",
+            math.floor(c.X+.5),math.floor(c.Y+.5),b.Parent and b.Parent:IsA("GuiObject") and b.Parent.LayoutOrder or -1,
+            tostring(vis(b))))
     end
-    local entries={}
-    for _,v in ipairs(panel:GetDescendants()) do
-        if v:IsA("GuiButton") then
-            local text=v:IsA("TextButton") and v.Text or ""
-            entries[#entries+1]=v.Name.."="..text
-            if #entries>=12 then break end
-        end
-    end
-    log("MOBILE HOTBAR DIAG | "..panel:GetFullName().." | buttons="..table.concat(entries,"; "))
 end
--- The old mobile build sent PC number keys. On Android these can be
--- accepted by VIM but ignored by the touch-only TroopsSelector UI.
 local function selectMobileUnit(unit)
     if not MOBILE_449 then return false,"not Android" end
-    local panel=pg:FindFirstChild("TroopsSelector",true)
-    if not panel then return false,"TroopsSelector missing" end
     local index=({pumpkin_farmer=1,chef_tv_man=2,medic_cameraman=3})[unit]
-    if not index then return false,"unknown unit" end
-    local candidates={}
-    for _,b in ipairs(panel:GetDescendants()) do
-        if b:IsA("GuiButton") and vis(b) then
-            local words={norm(b.Name),norm(txt(b))}
-            for _,d in ipairs(b:GetDescendants()) do
-                if d:IsA("TextLabel") then words[#words+1]=norm(txt(d)) end
+    if not index then return false,"unknown unit "..tostring(unit) end
+    local buttons,order=orderedMobileButtons()
+    if #buttons~=5 then
+        mobileHotbarReport()
+        return false,"mobile hotbar unavailable: "..tostring(order)
+    end
+    local b=buttons[index]
+    local c=midpoint(b)
+    local vp=liveViewport()
+    if c.X<0 or c.Y<0 or c.X>vp.X or c.Y>vp.Y then
+        return false,string.format("slot %d is outside viewport at %.0f,%.0f",index,c.X,c.Y)
+    end
+    log(string.format("MOBILE HOTBAR TAP #%d | %s @%d,%d | %s",index,unit,math.floor(c.X+.5),math.floor(c.Y+.5),order))
+    -- Delta has already verified GUI signals for Auto Skip. Prefer one
+    -- signal with an actual connected handler, not an unverified VIM event.
+    if type(firesignal)=="function" and type(getconnections)=="function" then
+        for _,signal in ipairs({b.Activated,b.MouseButton1Click}) do
+            local good,connections=pcall(getconnections,signal)
+            if good and type(connections)=="table" and #connections>0 then
+                local ok=pcall(firesignal,signal)
+                if ok then
+                    log("MOBILE HOTBAR SLOT "..index.." | connected GUI signal sent (not verified)")
+                    return true,"connected GUI signal"
+                end
             end
-            local good=false
-            for _,w in ipairs(words) do
-                if w==tostring(index) or w=="slot"..index or w=="troop"..index
-                    or w=="unit"..index or w==norm(unit) then good=true end
-            end
-            if good then candidates[#candidates+1]=b end
         end
     end
-    if #candidates~=1 then
-        return false,"no unique mobile slot #"..index.." (matches="..#candidates..")"
-    end
-    local b=candidates[1]
-    local center=midpoint(b)
-    local vp=liveViewport()
-    local ok=false
-    if center.X>=0 and center.Y>=0 and center.X<=vp.X and center.Y<=vp.Y then
-        ok=select(1,tapWithMethod(center.X,center.Y,"TOUCH"))
-    end
-    if not ok and type(firesignal)=="function" then
-        ok=pcall(function() firesignal(b.Activated) end)
-    end
-    if not ok then ok=pcall(function() b:Activate() end) end
+    -- Real screen tap fallback when handlers cannot be inspected.
+    local ok,why=tapWithMethod(c.X,c.Y,"TOUCH")
     if ok then
-        log("MOBILE HOTBAR SLOT "..index.." | "..b:GetFullName())
-        return true,"mobile GuiButton"
+        log("MOBILE HOTBAR SLOT "..index.." | "..tostring(why).." | selection SENT (not verified)")
+        return true,why
     end
-    return false,"mobile slot activation failed"
+    return false,"slot "..index.." touch failed: "..tostring(why)
 end
 local function selectUnitForPreview(unit)
     if MOBILE_449 then
-        local ok,why=selectMobileUnit(unit)
-        if ok then return true,why end
-        log("MOBILE HOTBAR FALLBACK | "..tostring(why).." | trying VIM key")
+        -- No keyboard fallback on Android; it pretends selection succeeded
+        -- even when no placement preview has been opened.
+        return selectMobileUnit(unit)
     end
     local key=slots[unit]
     if not key then return false,"unit not mapped" end
@@ -1387,6 +1413,62 @@ local sessionHookError=nil
 local sessionPlaceProfiles={}
 local observedPlaceCalls={}
 local calibrationRotationPending=0
+-- Direct upgrade discovery is SESSION-LOCAL. No guessed BridgeNet2 IDs.
+local upgradeProfiles={}
+local upgradeCapture=nil
+local function payloadHasInstance(value,wanted,seen,depth)
+    if typeof(value)=="Instance" then return value==wanted end
+    if type(value)~="table" or depth>5 then return false end
+    if seen[value] then return false end
+    seen[value]=true
+    for k,v in pairs(value) do
+        if payloadHasInstance(k,wanted,seen,depth+1)
+            or payloadHasInstance(v,wanted,seen,depth+1) then return true end
+    end
+    return false
+end
+local function replaceUpgradeInstance(value,from,to,seen,depth)
+    if typeof(value)=="Instance" then
+        if value==from then return to,true end
+        return value,false
+    end
+    if type(value)~="table" then return value,false end
+    if depth>6 then return nil,false end
+    if seen[value] then return seen[value],false end
+    local t={}; seen[value]=t
+    local replaced=false
+    for k,v in pairs(value) do
+        local nk,rk=replaceUpgradeInstance(k,from,to,seen,depth+1)
+        local nv,rv=replaceUpgradeInstance(v,from,to,seen,depth+1)
+        if nk==nil then return nil,false end
+        t[nk]=nv;replaced=replaced or rk or rv
+    end
+    return t,replaced
+end
+local function learnUpgradeProfile(unit,level,cost,sourceModel,samples,id)
+    local key=unit..":"..tostring(level)
+    if upgradeProfiles[key] then return true end
+    -- Only one model-addressed packet inside the confirmed-upgrade window
+    -- is sufficiently unambiguous to use. Never guess a command name.
+    local unique={}
+    local found={}
+    for _,entry in ipairs(samples) do
+        local tag=entry[2]
+        if type(tag)=="string" and not found[tag] then
+            found[tag]=true
+            unique[#unique+1]=entry
+        end
+    end
+    if #unique~=1 or type(cost)~="number" or cost<=0 then
+        say("DIRECT UPGRADE UNAVAILABLE", "#"..id.." "..key
+            .." | total="..#samples.." unique codes="..#unique)
+        return false
+    end
+    local entry=unique[1]
+    upgradeProfiles[key]={payload=entry,source=sourceModel,cost=cost}
+    say("DIRECT UPGRADE LEARNED",key.." | cost $"..tostring(cost).." | this server only")
+    return true
+end
 local gameRemote=game:GetService("ReplicatedStorage"):FindFirstChild("dataRemoteEvent")
 if type(hookmetamethod)=="function" and type(getnamecallmethod)=="function" then
     local oldNamecall
@@ -1398,8 +1480,16 @@ if type(hookmetamethod)=="function" and type(getnamecallmethod)=="function" then
                 local ok,ours=pcall(checkcaller)
                 if ok and ours then gameOrigin=false end
             end
+            local payload=select(1,...)
+            -- Capture the exact real-game packet created by a verified GUI
+            -- upgrade, limited to the click window and the selected model.
+            if upgradeCapture and typeof(payload)=="table"
+                and type(payload[2])=="string"
+                and payloadHasInstance(payload[1],upgradeCapture.model,{},0) then
+                local samples=upgradeCapture.samples
+                if #samples<10 then samples[#samples+1]=payload end
+            end
             if gameOrigin then
-                local payload=select(1,...)
                 if typeof(payload)=="table" and typeof(payload[1])=="table"
                     and typeof(payload[1][1])=="string"
                     and typeof(payload[1][2])=="Vector3"
@@ -1512,6 +1602,7 @@ local function doCalibrationPlacement(id,recT)
         return true
     end
     if preWhy then return false,preWhy end
+    if MOBILE_449 then mobileHotbarReport() end
     local attempts=0
     local adaptivePoints=nil
     local lastCashLog=0
@@ -1899,20 +1990,82 @@ local function findSignalButton(button)
     end
     return button
 end
--- Upgrade: the capture with two model-target N calls and one empty o call
--- does NOT prove that N upgrades anything. Use the previously successful
--- InspectMenu Activated route until we can calibrate the actual upgrade action.
+-- First verified GUI upgrade of a unit type+level learns the real packet.
+-- Later same-type/same-level upgrades use that packet directly and verify level.
+local function directVerifiedUpgrade(id,before,after,recT,info,m,profile)
+    local current=modelLevel(m)
+    if current and current~=before then
+        return false,"direct upgrade precondition: model level="..current.." expected="..before
+    end
+    local cash=nil
+    local t0=os.clock()
+    while not stopped and os.clock()-t0<75 do
+        cash=cashOnHud(nil)
+        if cash and cash>=profile.cost then break end
+        delayCheck(.3)
+    end
+    if stopped then return false,"stopped" end
+    if not cash or cash<profile.cost then
+        return false,"cash HUD unreadable or too little money for direct upgrade"
+    end
+    local packet,changed=replaceUpgradeInstance(profile.payload,profile.source,m,{},0)
+    if not changed or not packet then
+        return false,"captured upgrade packet did not contain the source model"
+    end
+    local remote,why=directRemote()
+    if not remote then return false,why end
+    local sent,err=pcall(function() remote:FireServer(packet) end)
+    if not sent then return false,"direct upgrade failed: "..tostring(err) end
+    say("DIRECT UPGRADE #"..id,info.unit.." Lv"..before.." -> "..after)
+    local untilAt=os.clock()+4
+    while not stopped and os.clock()<untilAt do
+        local observed=modelLevel(m)
+        if observed==after then
+            say("DIRECT UPGRADE VERIFIED #"..id,"model level="..after)
+            return true
+        elseif observed and observed~=before then
+            return false,"direct upgrade produced unexpected model level="..observed
+        end
+        delayCheck(.15)
+    end
+    -- Some Troops models have no Level field. Select ONLY for readback;
+    -- never click the old UpgradeButton as a fallback.
+    local opened,openWhy=aimAndOpen(m,id,recT)
+    if not opened then return false,"no level confirmation: "..tostring(openWhy) end
+    local checkUntil=os.clock()+3
+    while not stopped and os.clock()<checkUntil do
+        local state=inspect(info.unit)
+        if state and state.level==after then
+            say("DIRECT UPGRADE VERIFIED #"..id,"InspectMenu readback="..after)
+            return true
+        end
+        if state and state.level>after then
+            return false,"direct upgrade over-leveled, got "..state.level
+        end
+        delayCheck(.2)
+    end
+    return false,"direct upgrade not confirmed; OLD GUI fallback intentionally disabled"
+end
 local function guardedUpgrade(id,before,after,recT)
     collapseReplayMenu(true)
     local info=data.places[tostring(id)]
     local m=placedModels[id]
     if not m or not m.Parent then return false,"unit #"..id.." missing" end
+    local upgradeKey=info.unit..":"..tostring(before)
+    local savedProfile=upgradeProfiles[upgradeKey]
+    if CONFIG.directUpgrade and savedProfile then
+        return directVerifiedUpgrade(id,before,after,recT,info,m,savedProfile)
+    end
+    -- Unseen unit type+level: one legitimate, verified GUI upgrade is used
+    -- to learn the actual remote command. No hardcoded event/opcode guesses.
     -- v0.7: no per-unit recorded timing gate here. On reaching an upgrade action,
     -- select this specific unit and send Activated at the first affordable moment.
     -- Keep actions sequential: money / sleeping unit can delay but never skip a step.
     if stopped then return false,"stopped" end
     local lastLog,tries,signalAttempts=0,0,0
     local signalSentAt=nil
+    local signalCost=nil
+    local upgradeSamples={}
     local lastCashObserved=nil
     local lastCashChange=os.clock()
     local cashStallReported=false
@@ -1934,12 +2087,22 @@ local function guardedUpgrade(id,before,after,recT)
                 .." without this script confirming an upgrade signal; STOPPED to avoid losing unit identity"
         end
         if observed==after then
+            if CONFIG.directUpgrade then
+                if not learnUpgradeProfile(info.unit,before,signalCost,m,upgradeSamples,id) then
+                    return false,"cannot learn verified direct upgrade from this GUI signal; no guessed opcode"
+                end
+            end
             say("UPGRADE CONFIRMED #"..id,info.unit.." Lv"..before.." -> "..after.." (model)")
             cameraFrozen=nil
             cameraOverride=nil
             return true
         end
         if state and state.level==after and signalSentAt and (not observed or observed==after) then
+            if CONFIG.directUpgrade then
+                if not learnUpgradeProfile(info.unit,before,signalCost,m,upgradeSamples,id) then
+                    return false,"cannot learn verified direct upgrade from this GUI signal; no guessed opcode"
+                end
+            end
             say("UPGRADE CONFIRMED #"..id,info.unit.." Lv"..before.." -> "..after.." (InspectMenu)")
             cameraFrozen=nil
             cameraOverride=nil
@@ -1970,7 +2133,16 @@ local function guardedUpgrade(id,before,after,recT)
                     local button,reason=findSignalButton(state.button)
                     if not button then return false,reason end
                     signalAttempts=signalAttempts+1
+                    signalCost=state.cost
+                    -- Capture only calls emitted during the actual button click.
+                    local active={model=m,samples={}}
+                    upgradeCapture=active
                     local fired,err=pcall(function() firesignal(button.Activated,nil,1) end)
+                    delayCheck(.20)
+                    if upgradeCapture==active then upgradeCapture=nil end
+                    for _,packet in ipairs(active.samples) do
+                        upgradeSamples[#upgradeSamples+1]=packet
+                    end
                     if not fired then return false,"firesignal failed: "..tostring(err) end
                     signalSentAt=os.clock()
                     say("ACTIVATED #"..id.." attempt "..signalAttempts,"waiting for actual Level increase")
@@ -2178,6 +2350,8 @@ local function makeGui()
                 placedTimes={}
                 sessionPlaceProfiles={}
                 sessionPlaceCode=nil
+                upgradeCapture=nil
+                for key in pairs(upgradeProfiles) do upgradeProfiles[key]=nil end
                 observedPlaceCalls={}
                 sessionPlaceCaptured=0
                 keyEventCount=0
@@ -2209,7 +2383,7 @@ local function makeGui()
                 activeStart=os.clock()
                 -- First troop is placed by the real GUI to learn this server's compact bridge code.
                 -- Later troops use the learned code, camera stays still between GUI upgrades.
-                say("PLAYING v0.8.21 PER-TYPE CALIBRATION",#data.actions.." actions; first of EACH TYPE uses native click; others direct; GUI upgrades")
+                say("PLAYING v0.8.21 PER-TYPE CALIBRATION",#data.actions.." actions; first of EACH TYPE uses native click; others direct; LEARNED DIRECT upgrades")
                 local prevRecordedTime=0
                 for i,ev in ipairs(data.actions) do
                     if stopped then break end
@@ -2249,7 +2423,7 @@ local function makeGui()
                             if down then log("STATIONARY: skipped movement "..key) end
                         elseif (MOBILE_449 and (key=="One" or key=="Two" or key=="Three"))
                             or (sessionPlaceCode and (key=="One" or key=="Two" or key=="Three" or key=="R")) then
-                            if down then log("DIRECT MODE: skipped preview key "..key) end
+                            if down then log("MOBILE: skipped recorded keyboard preview key "..key) end
                         else
                             -- Before first calibration only: replicate the real hotbar
                             -- selection exactly as it was recorded.
@@ -2438,7 +2612,7 @@ do
         warn("[REDMI 449dp] Rotate phone to landscape BEFORE starting the replay")
     end
 end
-log("READY v0.8.21 REDMI449 CASH+DIRECT v2 | phone 449dp; strict cash source; mobile slots; direct after first calibrated type")
+log("READY v0.8.21 REDMI449 MOBILE SLOTS v3 | phone 449dp; strict cash source; mobile slots; direct after first calibrated type")
 -- ---------------------------------------------------------------------------
 -- PLAY AGAIN v0.8.8
 -- In this game's result GUI the green Play Again graphic may have a TextLabel
